@@ -40,86 +40,64 @@ def extract_terabox(url):
     if not surl: return None, "Could not find share ID."
 
     # ==========================================
-    # METHOD 1: Direct API with Cookie Generation (Mimics a real browser)
-    # ==========================================
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Connection": "keep-alive"
-    })
-    
-    domains = ["https://www.terabox.com", "https://1024tera.com", "https://teraboxapp.com"]
-    
-    for domain in domains:
-        try:
-            # 1. Visit homepage to force Terabox to give us a BAIDUID cookie
-            session.get(f"{domain}/", timeout=10, verify=False)
-            
-            # 2. Visit share link to get bdstoken
-            share_url = f"{domain}/sharing/link?surl={surl}"
-            resp_share = session.get(share_url, timeout=10, verify=False)
-            match_bdstoken = re.search(r'"bdstoken":"([a-z0-9]+)"', resp_share.text)
-            bdstoken = match_bdstoken.group(1) if match_bdstoken else ""
-            
-            # 3. Hit API
-            api_url = f"{domain}/share/list?app_id=250528&web=1&channel=0&jsToken=&shorturl={surl}&root=1&bdstoken={bdstoken}"
-            resp_api = session.get(api_url, headers={"Referer": share_url, "Origin": domain}, timeout=10, verify=False)
-            data = resp_api.json()
-
-            if data.get("errno") == 0 and data.get("list"):
-                file_data = data["list"][0]
-                dlink = file_data.get("dlink")
-                if dlink:
-                    return {'direct_url': dlink, 'filename': file_data.get('server_filename', 'terabox_file'), 'size': file_data.get('size'), 'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None}, None
-        except: pass
-
-    # ==========================================
-    # METHOD 2: Public Proxy Bypass (Hides Render's IP from Terabox)
+    # METHOD 1: WDZone Vercel API (Fastest & Most Reliable)
     # ==========================================
     try:
+        logging.info("Trying WDZone API...")
+        api_url = f"https://wdzone-terabox-api.vercel.app/api?url={quote(url, safe='')}"
+        resp = requests.get(api_url, timeout=15, verify=False, headers={"User-Agent": USER_AGENT})
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Check for direct link in response
+        dlink = data.get('dlink') or data.get('download_link') or data.get('direct_link')
+        if dlink:
+            return {'direct_url': dlink, 'filename': data.get('filename', 'terabox_file'), 'size': data.get('size'), 'thumbnail': data.get('thumbnail')}, None
+            
+        # Check if it's nested in a list
+        if isinstance(data, list) and len(data) > 0:
+            dlink = data[0].get('dlink') or data[0].get('download_link')
+            if dlink: return {'direct_url': dlink, 'filename': data[0].get('filename', 'terabox_file'), 'size': data[0].get('size'), 'thumbnail': data[0].get('thumb')}, None
+
+    except Exception as e:
+        logging.warning(f"WDZone API failed: {e}")
+
+    # ==========================================
+    # METHOD 2: Teradl API
+    # ==========================================
+    try:
+        logging.info("Trying Teradl API...")
+        api_url = f"https://teradl-api.dapuntaratya.com/api?mode=fast&url={quote(url, safe='')}"
+        resp = requests.get(api_url, timeout=15, verify=False, headers={"User-Agent": USER_AGENT})
+        data = resp.json()
+        
+        if isinstance(data, list) and len(data) > 0:
+            dlink = data[0].get('dlink') or data[0].get('download_link')
+            if dlink: return {'direct_url': dlink, 'filename': data[0].get('filename', 'terabox_file'), 'size': data[0].get('size'), 'thumbnail': data[0].get('thumb')}, None
+        elif isinstance(data, dict) and data.get('list'):
+            dlink = data['list'][0].get('dlink')
+            if dlink: return {'direct_url': dlink, 'filename': data['list'][0].get('filename', 'terabox_file'), 'size': data['list'][0].get('size'), 'thumbnail': data['list'][0].get('thumbs', {}).get('url') if data['list'][0].get('thumbs') else None}, None
+    except Exception as e:
+        logging.warning(f"Teradl API failed: {e}")
+
+    # ==========================================
+    # METHOD 3: AllOrigins Proxy Bypass
+    # ==========================================
+    try:
+        logging.info("Trying Proxy Bypass...")
         terabox_api_url = f"https://www.terabox.com/share/list?app_id=250528&web=1&channel=0&jsToken=&shorturl={surl}&root=1"
         proxy_url = f"https://api.allorigins.win/raw?url={quote(terabox_api_url, safe='')}"
         resp = requests.get(proxy_url, timeout=15, headers={"User-Agent": USER_AGENT})
         data = resp.json()
+        
         if data.get("errno") == 0 and data.get("list"):
             file_data = data["list"][0]
             dlink = file_data.get("dlink")
-            if dlink:
-                return {'direct_url': dlink, 'filename': file_data.get('server_filename', 'terabox_file'), 'size': file_data.get('size'), 'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None}, None
-    except: pass
+            if dlink: return {'direct_url': dlink, 'filename': file_data.get('server_filename', 'terabox_file'), 'size': file_data.get('size'), 'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None}, None
+    except Exception as e:
+        logging.warning(f"Proxy failed: {e}")
 
-    # ==========================================
-    # METHOD 3: Fallback to multiple community APIs (Anonymous, no login)
-    # ==========================================
-    apis = [
-        "https://teradl-api.dapuntaratya.com/api?mode=fast&url={}",
-        "https://widipe.com/api/terabox?url={}",
-        "https://ytshorts.savetube.me/api/terabox/?url={}",
-        "https://api.teradownloader.com/api/v1/fetch?url={}" # Using their public API chain
-    ]
-
-    for api in apis:
-        try:
-            api_url = api.format(quote(url, safe=''))
-            resp = requests.get(api_url, timeout=10, verify=False, headers={"User-Agent": USER_AGENT})
-            data = resp.json()
-
-            # Parse Array
-            if isinstance(data, list) and len(data) > 0:
-                dlink = data[0].get('dlink') or data[0].get('download_link')
-                if dlink: return {'direct_url': dlink, 'filename': data[0].get('filename', 'terabox_file'), 'size': data[0].get('size'), 'thumbnail': data[0].get('thumb')}, None
-            # Parse Dict
-            elif isinstance(data, dict):
-                if data.get('list') and len(data['list']) > 0:
-                    dlink = data['list'][0].get('dlink')
-                    if dlink: return {'direct_url': dlink, 'filename': data['list'][0].get('filename', 'terabox_file'), 'size': data['list'][0].get('size'), 'thumbnail': data['list'][0].get('thumbs', {}).get('url') if data['list'][0].get('thumbs') else None}, None
-                dlink = data.get('dlink') or data.get('download_link')
-                if dlink: return {'direct_url': dlink, 'filename': data.get('filename', 'terabox_file'), 'size': data.get('size'), 'thumbnail': data.get('thumb')}, None
-        except: pass
-
-    return None, "Failed. Terabox is heavily blocking all anonymous servers right now. Try again in 5 minutes."
+    return None, "Failed. All anonymous APIs are currently blocked. Please try again later."
 
 def sign_url(url: str, ttl: int = 3600) -> str:
     exp = int(time.time()) + ttl
