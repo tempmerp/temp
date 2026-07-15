@@ -16,7 +16,6 @@ from urllib.parse import quote, urlparse
 app = Flask(__name__)
 CORS(app)
 
-# Using a Mobile User-Agent often bypasses Cloudflare desktop blocks
 USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
 HMAC_SECRET = os.environ.get('SECRET_KEY', 'super-secret-key-123').encode()
 
@@ -56,60 +55,37 @@ def extract_terabox(url):
     
     errors = []
 
-    # ==========================================
-    # METHOD 1: Terabox WAP (Mobile) API
-    # ==========================================
+    # 1. WAP Mobile API
     try:
-        logging.info("Trying WAP Mobile API...")
         wap_url = f"https://wapp.terabox.com/share/wap/list?app_id=250528&web=1&channel=0&jsToken=&shorturl={surl}&root=1"
-        resp = requests.get(wap_url, timeout=15, verify=False, headers={
-            "User-Agent": USER_AGENT,
-            "Referer": f"https://wapp.terabox.com/share/link?surl={surl}"
-        })
+        resp = requests.get(wap_url, timeout=15, verify=False, headers={"User-Agent": USER_AGENT, "Referer": f"https://wapp.terabox.com/share/link?surl={surl}"})
         data = resp.json()
-        
         if data.get("errno") == 0 and data.get("list"):
-            file_data = data["list"][0]
-            dlink = file_data.get("dlink")
-            if dlink:
-                return {'direct_url': dlink, 'filename': file_data.get('server_filename', 'terabox_file'), 'size': file_data.get('size'), 'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None}, None
+            dlink = data["list"][0].get("dlink")
+            if dlink: return {'direct_url': dlink, 'filename': data["list"][0].get('server_filename', 'terabox_file'), 'size': data["list"][0].get('size'), 'thumbnail': data["list"][0].get('thumbs', {}).get('url2') if data["list"][0].get('thumbs') else None}, None
         errors.append(f"WAP: {data.get('errmsg', 'No link')}")
     except Exception as e:
         errors.append(f"WAP: {str(e)[:30]}")
 
-    # ==========================================
-    # METHOD 2: AllOrigins Proxy (Fetch Desktop API)
-    # ==========================================
+    # 2. Proxy Bypass
     try:
-        logging.info("Trying Proxy...")
         terabox_api_url = f"https://www.terabox.com/share/list?app_id=250528&web=1&channel=0&jsToken=&shorturl={surl}&root=1"
         proxy_url = f"https://api.allorigins.win/raw?url={quote(terabox_api_url, safe='')}"
         resp = requests.get(proxy_url, timeout=15, headers={"User-Agent": USER_AGENT})
         data = resp.json()
-        
         if data.get("errno") == 0 and data.get("list"):
-            file_data = data["list"][0]
-            dlink = file_data.get("dlink")
-            if dlink:
-                return {'direct_url': dlink, 'filename': file_data.get('server_filename', 'terabox_file'), 'size': file_data.get('size'), 'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None}, None
+            dlink = data["list"][0].get("dlink")
+            if dlink: return {'direct_url': dlink, 'filename': data["list"][0].get('server_filename', 'terabox_file'), 'size': data["list"][0].get('size'), 'thumbnail': data["list"][0].get('thumbs', {}).get('url2') if data["list"][0].get('thumbs') else None}, None
         errors.append(f"Proxy: {data.get('errmsg', 'No link')}")
     except Exception as e:
         errors.append(f"Proxy: {str(e)[:30]}")
 
-    # ==========================================
-    # METHOD 3: Public APIs
-    # ==========================================
-    apis = [
-        f"https://teradl-api.dapuntaratya.com/api?mode=fast&url={quote(url, safe='')}",
-        f"https://ytshorts.savetube.me/api/terabox/?url={quote(url, safe='')}"
-    ]
-
+    # 3. Public APIs
+    apis = [f"https://teradl-api.dapuntaratya.com/api?mode=fast&url={quote(url, safe='')}", f"https://ytshorts.savetube.me/api/terabox/?url={quote(url, safe='')}"]
     for api in apis:
         try:
-            logging.info(f"Trying API: {api[:40]}")
             resp = requests.get(api, timeout=15, verify=False, headers={"User-Agent": USER_AGENT})
             data = resp.json()
-            
             dlink = find_key(data, ['dlink', 'download_link', 'direct_link'])
             if dlink and dlink.startswith('http'):
                 filename = find_key(data, ['filename', 'server_filename']) or 'terabox_file'
@@ -141,7 +117,7 @@ HTML_PAGE = """
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TeraDownloader - Download Terabox Files</title>
+    <title>TeraDownloader - V2.0</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
@@ -150,6 +126,7 @@ HTML_PAGE = """
         .navbar { display: flex; justify-content: space-between; align-items: center; background: #fff; padding: 15px 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); margin-bottom: 30px; }
         .logo { font-size: 26px; font-weight: 800; color: #e74c3c; text-decoration: none; }
         .logo span { color: #2d3436; }
+        .version { font-size: 14px; color: #999; font-weight: bold; }
         .hero { background: #fff; border-radius: 20px; padding: 40px 35px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); text-align: center; margin-bottom: 30px; }
         .hero h1 { font-size: 32px; margin-bottom: 10px; }
         .hero h1 i { color: #e74c3c; margin-right: 10px; }
@@ -173,7 +150,10 @@ HTML_PAGE = """
 </head>
 <body>
     <div class="container">
-        <nav class="navbar"><a href="/" class="logo">Tera<span>Downloader</span></a></nav>
+        <nav class="navbar">
+            <a href="/" class="logo">Tera<span>Downloader</span></a>
+            <span class="version">V2.0 - Anonymous Mode</span>
+        </nav>
         <div class="hero">
             <h1><i class="fas fa-download"></i>Download Terabox Files</h1>
             <p>Paste your Terabox link below to generate a direct download link.</p>
