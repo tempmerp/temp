@@ -17,11 +17,7 @@ app = Flask(__name__)
 CORS(app)
 
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-REQUEST_TIMEOUT = 30
 HMAC_SECRET = os.environ.get('SECRET_KEY', 'super-secret-key-123').encode()
-
-# YAHAN APNA BDUSS COOKIE PASTE KAR (Bina quotes hataye)
-BDUSS_COOKIE = "YAHAN_PASTE_KAR"
 
 def validate_url(url):
     try:
@@ -43,75 +39,56 @@ def extract_terabox(url):
     surl = get_surl(url)
     if not surl: return None, "Could not find share ID."
 
-    # The official Terabox API URL
-    terabox_api_url = f"https://www.terabox.com/share/list?app_id=250528&web=1&channel=0&jsToken=&shorturl={surl}&root=1"
-
-    # List of Proxy Servers (This hides your server's IP from Terabox, bypassing the CAPTCHA block)
-    proxies = [
-        f"https://api.allorigins.win/raw?url={quote(terabox_api_url, safe='')}",
-        f"https://corsproxy.io/?url={quote(terabox_api_url, safe='')}",
-        f"https://api.codetabs.com/v1/proxy/?quest={quote(terabox_api_url, safe='')}"
-    ]
-
-    # 1. Try fetching through Proxies (No login required, bypasses IP block)
-    for proxy_url in proxies:
-        try:
-            logging.info(f"Trying proxy: {proxy_url}")
-            resp = requests.get(proxy_url, timeout=20, headers={"User-Agent": USER_AGENT})
-            resp.raise_for_status()
-            data = resp.json()
-
-            if data.get("errno") == 0 and data.get("list"):
-                file_data = data["list"][0]
-                dlink = file_data.get("dlink")
-                if dlink:
-                    logging.info("Success via Proxy!")
-                    return {
-                        'direct_url': dlink,
-                        'filename': file_data.get('server_filename', 'terabox_file'),
-                        'size': file_data.get('size'),
-                        'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None
-                    }, None
-        except Exception as e:
-            logging.warning(f"Proxy failed: {e}")
-
-    # 2. Fallback to public anonymous APIs
-    fallback_apis = [
+    # 1. Try Fast Public APIs First (10s timeout so Render doesn't crash)
+    fast_apis = [
         "https://teradl-api.dapuntaratya.com/api?mode=fast&url={}",
-        "https://teradl-api.dapuntaratya.com/api?mode=slow&url={}"
+        "https://widipe.com/api/terabox?url={}"
     ]
 
-    for api in fallback_apis:
+    for api in fast_apis:
         try:
-            logging.info(f"Trying fallback API: {api}")
+            logging.info(f"Trying fast API: {api}")
             api_url = api.format(quote(url, safe=''))
-            resp = requests.get(api_url, timeout=15, verify=False, headers={"User-Agent": USER_AGENT})
+            resp = requests.get(api_url, timeout=10, verify=False, headers={"User-Agent": USER_AGENT})
             data = resp.json()
 
+            # Parse Array response
             if isinstance(data, list) and len(data) > 0:
-                file_data = data[0]
-                dlink = file_data.get('dlink') or file_data.get('download_link')
+                dlink = data[0].get('dlink') or data[0].get('download_link')
                 if dlink:
-                    return {
-                        'direct_url': dlink,
-                        'filename': file_data.get('filename', 'terabox_file'),
-                        'size': file_data.get('size'),
-                        'thumbnail': file_data.get('thumb')
-                    }, None
-            elif isinstance(data, dict) and data.get('list'):
-                file_data = data['list'][0]
-                dlink = file_data.get('dlink')
+                    return {'direct_url': dlink, 'filename': data[0].get('filename', 'terabox_file'), 'size': data[0].get('size'), 'thumbnail': data[0].get('thumb')}, None
+            
+            # Parse Dict response
+            elif isinstance(data, dict):
+                if data.get('list') and len(data['list']) > 0:
+                    dlink = data['list'][0].get('dlink')
+                    if dlink:
+                        return {'direct_url': dlink, 'filename': data['list'][0].get('filename', 'terabox_file'), 'size': data['list'][0].get('size'), 'thumbnail': data['list'][0].get('thumbs', {}).get('url') if data['list'][0].get('thumbs') else None}, None
+                dlink = data.get('dlink') or data.get('download_link')
                 if dlink:
-                    return {
-                        'direct_url': dlink,
-                        'filename': file_data.get('filename', 'terabox_file'),
-                        'size': file_data.get('size'),
-                        'thumbnail': file_data.get('thumbs', {}).get('url') if file_data.get('thumbs') else None
-                    }, None
-        except Exception as e:
-            logging.error(f"Fallback API failed: {e}")
+                    return {'direct_url': dlink, 'filename': data.get('filename', 'terabox_file'), 'size': data.get('size'), 'thumbnail': data.get('thumb')}, None
 
-    return None, "Failed. Terabox is blocking all anonymous requests right now. Please try again later."
+        except Exception as e:
+            logging.warning(f"Fast API failed: {e}")
+
+    # 2. Try Proxy Bypass (To bypass Cloudflare block on Render's IP)
+    terabox_api_url = f"https://www.terabox.com/share/list?app_id=250528&web=1&channel=0&jsToken=&shorturl={surl}&root=1"
+    proxy_url = f"https://api.allorigins.win/raw?url={quote(terabox_api_url, safe='')}"
+    
+    try:
+        logging.info("Trying Proxy bypass...")
+        resp = requests.get(proxy_url, timeout=15, headers={"User-Agent": USER_AGENT})
+        data = resp.json()
+
+        if data.get("errno") == 0 and data.get("list"):
+            file_data = data["list"][0]
+            dlink = file_data.get("dlink")
+            if dlink:
+                return {'direct_url': dlink, 'filename': file_data.get('server_filename', 'terabox_file'), 'size': file_data.get('size'), 'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None}, None
+    except Exception as e:
+        logging.error(f"Proxy failed: {e}")
+
+    return None, "Failed. Terabox is blocking the server. Please try again in a minute."
 
 def sign_url(url: str, ttl: int = 3600) -> str:
     exp = int(time.time()) + ttl
@@ -132,7 +109,7 @@ HTML_PAGE = """
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TeraDownloader</title>
+    <title>TeraDownloader - Download Terabox Files</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
@@ -149,6 +126,7 @@ HTML_PAGE = """
         .download-form input { flex: 1; min-width: 250px; padding: 16px 20px; border: 2px solid #dfe6e9; border-radius: 50px; font-size: 16px; outline: none; }
         .download-form input:focus { border-color: #e74c3c; }
         .download-form button { padding: 16px 40px; background: #e74c3c; color: #fff; border: none; border-radius: 50px; font-size: 18px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+        .download-form button:hover { background: #c0392b; }
         #result { margin-top: 30px; padding: 20px; border-radius: 12px; background: #f8f9fa; display: none; }
         #result.show { display: block; }
         #result .thumbnail { max-width: 100%; border-radius: 10px; margin: 10px 0; max-height: 300px; }
@@ -158,6 +136,7 @@ HTML_PAGE = """
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .error-message { color: #e74c3c; padding: 15px; background: #fde8e8; border-radius: 8px; margin-top: 15px; display: none; }
         .error-message.show { display: block; }
+        .footer { margin-top: 40px; padding: 30px 0; text-align: center; font-size: 14px; color: #777; }
     </style>
 </head>
 <body>
@@ -179,6 +158,7 @@ HTML_PAGE = """
                 <a id="downloadBtn" class="direct-download-btn"><i class="fas fa-download"></i> Download File</a>
             </div>
         </div>
+        <footer class="footer"><p>&copy; 2024 TeraDownloader. All rights reserved.</p></footer>
     </div>
     <script>
         const form = document.getElementById('downloadForm');
@@ -203,7 +183,7 @@ HTML_PAGE = """
                 fileInfo.textContent = 'File: ' + (data.filename || 'terabox_file');
                 downloadBtn.href = data.download_url; downloadBtn.style.display = 'inline-block';
                 result.classList.add('show');
-            } catch (error) { showError('Network error.'); } 
+            } catch (error) { showError('Server took too long to respond. Please try again.'); } 
             finally { loader.classList.remove('show'); }
         });
         function showError(message) { errorMessage.textContent = message; errorMessage.classList.add('show'); }
@@ -240,7 +220,7 @@ def download_file():
     def generate():
         try:
             headers = {"User-Agent": USER_AGENT, "Referer": "https://www.terabox.com/"}
-            with requests.get(url, stream=True, timeout=REQUEST_TIMEOUT, headers=headers, verify=False) as r:
+            with requests.get(url, stream=True, timeout=30, headers=headers, verify=False) as r:
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=64 * 1024):
                     if chunk: yield chunk
