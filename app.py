@@ -146,4 +146,100 @@ HTML_PAGE = """
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .error-message { color: #e74c3c; padding: 15px; background: #fde8e8; border-radius: 8px; margin-top: 15px; display: none; font-size: 14px; }
         .error-message.show { display: block; }
-        .footer { margin-top: 40px; padding: 30px 0; text-align:
+        .footer { margin-top: 40px; padding: 30px 0; text-align: center; font-size: 14px; color: #777; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav class="navbar"><a href="/" class="logo">Tera<span>Downloader</span></a></nav>
+        <div class="hero">
+            <h1><i class="fas fa-download"></i>Download Terabox Files</h1>
+            <p>Paste your Terabox link below to generate a direct download link.</p>
+            <form class="download-form" id="downloadForm">
+                <input type="url" id="urlInput" placeholder="Enter terabox link here" required />
+                <button type="submit"><i class="fas fa-download"></i> Download</button>
+            </form>
+            <div class="loader" id="loader"></div>
+            <div class="error-message" id="errorMessage"></div>
+            <div id="result">
+                <h3><i class="fas fa-check-circle" style="color:#27ae60;"></i> Ready to Download!</h3>
+                <img id="thumbnail" class="thumbnail" style="display:none;" />
+                <div id="fileInfo"></div>
+                <a id="downloadBtn" class="direct-download-btn"><i class="fas fa-download"></i> Download File</a>
+            </div>
+        </div>
+        <footer class="footer"><p>&copy; 2024 TeraDownloader. All rights reserved.</p></footer>
+    </div>
+    <script>
+        const form = document.getElementById('downloadForm');
+        const urlInput = document.getElementById('urlInput');
+        const loader = document.getElementById('loader');
+        const result = document.getElementById('result');
+        const errorMessage = document.getElementById('errorMessage');
+        const thumbnail = document.getElementById('thumbnail');
+        const fileInfo = document.getElementById('fileInfo');
+        const downloadBtn = document.getElementById('downloadBtn');
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            result.classList.remove('show'); errorMessage.classList.remove('show'); errorMessage.textContent = '';
+            const url = urlInput.value.trim();
+            if (!url) { showError('Please enter a URL'); return; }
+            loader.classList.add('show');
+            try {
+                const response = await fetch('/api/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+                const data = await response.json();
+                if (!response.ok || !data.success) { showError(data.error || 'Unknown error occurred.'); return; }
+                if (data.thumbnail) { thumbnail.src = data.thumbnail; thumbnail.style.display = 'block'; } else { thumbnail.style.display = 'none'; }
+                fileInfo.textContent = 'File: ' + (data.filename || 'terabox_file');
+                downloadBtn.href = data.download_url; downloadBtn.style.display = 'inline-block';
+                result.classList.add('show');
+            } catch (error) { showError('Server took too long to respond. Please try again.'); } 
+            finally { loader.classList.remove('show'); }
+        });
+        function showError(message) { errorMessage.textContent = message; errorMessage.classList.add('show'); }
+    </script>
+</body>
+</html>
+"""
+
+@app.route('/')
+def index(): return HTML_PAGE
+
+@app.route('/api/download', methods=['POST'])
+def download():
+    data = request.get_json()
+    if not data or 'url' not in data: return jsonify({'success': False, 'error': 'No URL provided.'}), 400
+    url = data['url'].strip()
+    if not url.startswith('http'): return jsonify({'success': False, 'error': 'Invalid URL format.'}), 400
+    
+    file_info, error = extract_terabox(url)
+    if error: return jsonify({'success': False, 'error': error}), 404
+    
+    direct_url = file_info.get('direct_url')
+    filename = file_info.get('filename', 'terabox_file')
+    signed = sign_url(direct_url)
+    exp, sig = signed.split('.')
+    proxy_url = f"/api/download-file?url={quote(direct_url, safe='')}&exp={exp}&sig={sig}&fn={quote(filename, safe='')}"
+    return jsonify({'success': True, 'download_url': proxy_url, 'filename': filename, 'thumbnail': file_info.get('thumbnail'), 'size': file_info.get('size')})
+
+@app.route('/api/download-file', methods=['GET'])
+def download_file():
+    url = request.args.get('url'); exp = request.args.get('exp'); sig = request.args.get('sig'); filename = request.args.get('fn', 'terabox_file')
+    if not (url and exp and sig) or not verify_url(exp, sig, url): return jsonify({'error': 'Invalid or expired link'}), 403
+    
+    def generate():
+        try:
+            headers = {"User-Agent": USER_AGENT, "Referer": "https://www.terabox.com/"}
+            with requests.get(url, stream=True, timeout=30, headers=headers, verify=False) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=64 * 1024):
+                    if chunk: yield chunk
+        except Exception as e: yield b""
+        
+    mimetype, _ = mimetypes.guess_type(filename)
+    if mimetype is None: mimetype = 'application/octet-stream'
+    headers = {'Content-Disposition': f'attachment; filename="{filename}"', 'Content-Type': mimetype}
+    return Response(stream_with_context(generate()), headers=headers)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
