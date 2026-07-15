@@ -16,15 +16,9 @@ from urllib.parse import quote, urlparse
 app = Flask(__name__)
 CORS(app)
 
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+# Using a Mobile User-Agent often bypasses Cloudflare desktop blocks
+USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
 HMAC_SECRET = os.environ.get('SECRET_KEY', 'super-secret-key-123').encode()
-
-# ========================================================
-# CRITICAL: PASTE YOUR BDUSS COOKIE HERE
-# Users on your website will NOT need to log in. 
-# Your server uses this cookie silently in the background.
-# ========================================================
-BDUSS_COOKIE = "PASTE_YOUR_BDUSS_HERE"
 
 def validate_url(url):
     try:
@@ -41,52 +35,92 @@ def get_surl(url):
     if match: return match.group(1) if match.group(1).startswith("1") else "1" + match.group(1)
     return None
 
+def find_key(obj, keys):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in keys:
+                if isinstance(v, str) and v.startswith('http'): return v
+                if isinstance(v, str) and v != "": return v
+            res = find_key(v, keys)
+            if res: return res
+    elif isinstance(obj, list):
+        for item in obj:
+            res = find_key(item, keys)
+            if res: return res
+    return None
+
 def extract_terabox(url):
     if not validate_url(url): return None, "Invalid Terabox URL."
     surl = get_surl(url)
     if not surl: return None, "Could not find share ID."
+    
+    errors = []
 
-    if BDUSS_COOKIE == "PASTE_YOUR_BDUSS_HERE":
-        return None, "Server admin needs to put BDUSS cookie in backend code."
+    # ==========================================
+    # METHOD 1: Terabox WAP (Mobile) API
+    # ==========================================
+    try:
+        logging.info("Trying WAP Mobile API...")
+        wap_url = f"https://wapp.terabox.com/share/wap/list?app_id=250528&web=1&channel=0&jsToken=&shorturl={surl}&root=1"
+        resp = requests.get(wap_url, timeout=15, verify=False, headers={
+            "User-Agent": USER_AGENT,
+            "Referer": f"https://wapp.terabox.com/share/link?surl={surl}"
+        })
+        data = resp.json()
+        
+        if data.get("errno") == 0 and data.get("list"):
+            file_data = data["list"][0]
+            dlink = file_data.get("dlink")
+            if dlink:
+                return {'direct_url': dlink, 'filename': file_data.get('server_filename', 'terabox_file'), 'size': file_data.get('size'), 'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None}, None
+        errors.append(f"WAP: {data.get('errmsg', 'No link')}")
+    except Exception as e:
+        errors.append(f"WAP: {str(e)[:30]}")
 
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": USER_AGENT,
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
-        "Cookie": f"BDUSS={BDUSS_COOKIE}; BAIDUID=1234567890:FG=1",
-        # Spoofing IP header to bypass Cloudflare block on Render
-        "X-Forwarded-For": "180.97.34.50" 
-    })
+    # ==========================================
+    # METHOD 2: AllOrigins Proxy (Fetch Desktop API)
+    # ==========================================
+    try:
+        logging.info("Trying Proxy...")
+        terabox_api_url = f"https://www.terabox.com/share/list?app_id=250528&web=1&channel=0&jsToken=&shorturl={surl}&root=1"
+        proxy_url = f"https://api.allorigins.win/raw?url={quote(terabox_api_url, safe='')}"
+        resp = requests.get(proxy_url, timeout=15, headers={"User-Agent": USER_AGENT})
+        data = resp.json()
+        
+        if data.get("errno") == 0 and data.get("list"):
+            file_data = data["list"][0]
+            dlink = file_data.get("dlink")
+            if dlink:
+                return {'direct_url': dlink, 'filename': file_data.get('server_filename', 'terabox_file'), 'size': file_data.get('size'), 'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None}, None
+        errors.append(f"Proxy: {data.get('errmsg', 'No link')}")
+    except Exception as e:
+        errors.append(f"Proxy: {str(e)[:30]}")
 
-    domains = ["https://www.terabox.com", "https://1024tera.com", "https://teraboxapp.com"]
+    # ==========================================
+    # METHOD 3: Public APIs
+    # ==========================================
+    apis = [
+        f"https://teradl-api.dapuntaratya.com/api?mode=fast&url={quote(url, safe='')}",
+        f"https://ytshorts.savetube.me/api/terabox/?url={quote(url, safe='')}"
+    ]
 
-    for domain in domains:
+    for api in apis:
         try:
-            # 1. Visit share page to get bdstoken
-            share_url = f"{domain}/sharing/link?surl={surl}"
-            resp_share = session.get(share_url, timeout=15, verify=False)
+            logging.info(f"Trying API: {api[:40]}")
+            resp = requests.get(api, timeout=15, verify=False, headers={"User-Agent": USER_AGENT})
+            data = resp.json()
             
-            match_bdstoken = re.search(r'"bdstoken":"([a-z0-9]+)"', resp_share.text)
-            bdstoken = match_bdstoken.group(1) if match_bdstoken else ""
-            
-            # 2. Hit the API
-            api_url = f"{domain}/share/list?app_id=250528&web=1&channel=0&jsToken=&shorturl={surl}&root=1&bdstoken={bdstoken}"
-            resp_api = session.get(api_url, timeout=15, verify=False)
-            data = resp_api.json()
-
-            if data.get("errno") == 0 and data.get("list"):
-                file_data = data["list"][0]
-                dlink = file_data.get("dlink")
-                if dlink:
-                    return {'direct_url': dlink, 'filename': file_data.get('server_filename', 'terabox_file'), 'size': file_data.get('size'), 'thumbnail': file_data.get('thumbs', {}).get('url2') if file_data.get('thumbs') else None}, None
-            else:
-                logging.warning(f"{domain} error: {data.get('errmsg')}")
+            dlink = find_key(data, ['dlink', 'download_link', 'direct_link'])
+            if dlink and dlink.startswith('http'):
+                filename = find_key(data, ['filename', 'server_filename']) or 'terabox_file'
+                size = find_key(data, ['size', 'file_size'])
+                thumb = find_key(data, ['thumb', 'thumbnail'])
+                return {'direct_url': dlink, 'filename': filename, 'size': size, 'thumbnail': thumb}, None
+            errors.append(f"API: No link")
         except Exception as e:
-            logging.warning(f"{domain} failed: {e}")
+            errors.append(f"API: {str(e)[:30]}")
 
-    return None, "Failed. Cookie might be expired, try getting a new one."
+    return None, f"All methods failed: {' | '.join(errors)}"
 
 def sign_url(url: str, ttl: int = 3600) -> str:
     exp = int(time.time()) + ttl
@@ -132,7 +166,7 @@ HTML_PAGE = """
         .loader { border: 4px solid #f3f3f3; border-top: 4px solid #e74c3c; border-radius: 50%; width: 40px; height: 40px; animation: spin 0.8s linear infinite; margin: 20px auto; display: none; }
         .loader.show { display: block; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .error-message { color: #e74c3c; padding: 15px; background: #fde8e8; border-radius: 8px; margin-top: 15px; display: none; }
+        .error-message { color: #e74c3c; padding: 15px; background: #fde8e8; border-radius: 8px; margin-top: 15px; display: none; font-size: 14px; }
         .error-message.show { display: block; }
         .footer { margin-top: 40px; padding: 30px 0; text-align: center; font-size: 14px; color: #777; }
     </style>
